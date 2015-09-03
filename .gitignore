@@ -1,0 +1,6 @@
+*.cmd
+*.o
+*.builtin
+*.order
+tags
+

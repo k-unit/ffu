@@ -1,0 +1,357 @@
+From dedd069bf3aa6900701a475004fef7c097e829b3 Mon Sep 17 00:00:00 2001
+From: Ilan Smith <ilan.smith@sandisk.com>
+Date: Fri, 4 Sep 2015 04:07:17 +0800
+Subject: [PATCH 1/2] mmc: Moved some service functions from test code to mmc
+ driver.
+
+Change-Id: I5081891cffc89307b36be31438d7d599b259fd14
+---
+ drivers/mmc/card/mmc_test.c | 106 ++++--------------------------------
+ drivers/mmc/core/core.c     | 129 ++++++++++++++++++++++++++++++++++++++++++++
+ include/linux/mmc/core.h    |   9 ++++
+ 3 files changed, 149 insertions(+), 95 deletions(-)
+
+diff --git a/drivers/mmc/card/mmc_test.c b/drivers/mmc/card/mmc_test.c
+index 4785c1d..85ef97f 100644
+--- a/drivers/mmc/card/mmc_test.c
++++ b/drivers/mmc/card/mmc_test.c
+@@ -13,6 +13,7 @@
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/mmc.h>
++#include <linux/mmc/core.h>
+ #include <linux/slab.h>
+ 
+ #include <linux/scatterlist.h>
+@@ -118,78 +119,6 @@ static int mmc_test_set_blksize(struct mmc_test_card *test, unsigned size)
+ 	return mmc_set_blocklen(test->card, size);
+ }
+ 
+-static void mmc_test_prepare_mrq(struct mmc_test_card *test,
+-	struct mmc_request *mrq, struct scatterlist *sg, unsigned sg_len,
+-	unsigned dev_addr, unsigned blocks, unsigned blksz, int write)
+-{
+-	BUG_ON(!mrq || !mrq->cmd || !mrq->data || !mrq->stop);
+-
+-	if (blocks > 1) {
+-		mrq->cmd->opcode = write ?
+-			MMC_WRITE_MULTIPLE_BLOCK : MMC_READ_MULTIPLE_BLOCK;
+-	} else {
+-		mrq->cmd->opcode = write ?
+-			MMC_WRITE_BLOCK : MMC_READ_SINGLE_BLOCK;
+-	}
+-
+-	mrq->cmd->arg = dev_addr;
+-	if (!mmc_card_blockaddr(test->card))
+-		mrq->cmd->arg <<= 9;
+-
+-	mrq->cmd->flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+-
+-	if (blocks == 1)
+-		mrq->stop = NULL;
+-	else {
+-		mrq->stop->opcode = MMC_STOP_TRANSMISSION;
+-		mrq->stop->arg = 0;
+-		mrq->stop->flags = MMC_RSP_R1B | MMC_CMD_AC;
+-	}
+-
+-	mrq->data->blksz = blksz;
+-	mrq->data->blocks = blocks;
+-	mrq->data->flags = write ? MMC_DATA_WRITE : MMC_DATA_READ;
+-	mrq->data->sg = sg;
+-	mrq->data->sg_len = sg_len;
+-
+-	mmc_set_data_timeout(mrq->data, test->card);
+-}
+-
+-static int mmc_test_busy(struct mmc_command *cmd)
+-{
+-	return !(cmd->resp[0] & R1_READY_FOR_DATA) ||
+-		(R1_CURRENT_STATE(cmd->resp[0]) == R1_STATE_PRG);
+-}
+-
+-static int mmc_test_wait_busy(struct mmc_test_card *test)
+-{
+-	int ret, busy;
+-	struct mmc_command cmd = {0};
+-
+-	busy = 0;
+-	do {
+-		memset(&cmd, 0, sizeof(struct mmc_command));
+-
+-		cmd.opcode = MMC_SEND_STATUS;
+-		cmd.arg = test->card->rca << 16;
+-		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+-
+-		ret = mmc_wait_for_cmd(test->card->host, &cmd, 0);
+-		if (ret)
+-			break;
+-
+-		if (!busy && mmc_test_busy(&cmd)) {
+-			busy = 1;
+-			if (test->card->host->caps & MMC_CAP_WAIT_WHILE_BUSY)
+-				pr_info("%s: Warning: Host did not "
+-					"wait for busy state to end.\n",
+-					mmc_hostname(test->card->host));
+-		}
+-	} while (mmc_test_busy(&cmd));
+-
+-	return ret;
+-}
+-
+ static int mmc_test_buffer_transfer(struct mmc_test_card *test,
+ 	u8 *buffer, unsigned addr, unsigned blksz, int write)
+ {
+@@ -208,7 +137,7 @@ static int mmc_test_buffer_transfer(struct mmc_test_card *test,
+ 
+ 	sg_init_one(&sg, buffer, blksz);
+ 
+-	mmc_test_prepare_mrq(test, &mrq, &sg, 1, addr, 1, blksz, write);
++	mmc_prepare_mrq(test->card, &mrq, &sg, 1, addr, 1, blksz, write);
+ 
+ 	mmc_wait_for_req(test->card->host, &mrq);
+ 
+@@ -217,7 +146,7 @@ static int mmc_test_buffer_transfer(struct mmc_test_card *test,
+ 	if (data.error)
+ 		return data.error;
+ 
+-	ret = mmc_test_wait_busy(test);
++	ret = mmc_test_wait_busy(test->card);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -575,20 +504,7 @@ static int mmc_test_check_result(struct mmc_test_card *test,
+ {
+ 	int ret;
+ 
+-	BUG_ON(!mrq || !mrq->cmd || !mrq->data);
+-
+-	ret = 0;
+-
+-	if (!ret && mrq->cmd->error)
+-		ret = mrq->cmd->error;
+-	if (!ret && mrq->data->error)
+-		ret = mrq->data->error;
+-	if (!ret && mrq->stop && mrq->stop->error)
+-		ret = mrq->stop->error;
+-	if (!ret && mrq->data->bytes_xfered !=
+-		mrq->data->blocks * mrq->data->blksz)
+-		ret = RESULT_FAIL;
+-
++	ret = mmc_check_result(mrq);
+ 	if (ret == -EINVAL)
+ 		ret = RESULT_UNSUP_HOST;
+ 
+@@ -601,7 +517,7 @@ static int mmc_test_check_result_async(struct mmc_card *card,
+ 	struct mmc_test_async_req *test_async =
+ 		container_of(areq, struct mmc_test_async_req, areq);
+ 
+-	mmc_test_wait_busy(test_async->test);
++	mmc_test_wait_busy(test_async->test->card);
+ 
+ 	return mmc_test_check_result(test_async->test, areq->mrq);
+ }
+@@ -685,8 +601,8 @@ static int mmc_test_nonblock_transfer(struct mmc_test_card *test,
+ 	other_areq->err_check = mmc_test_check_result_async;
+ 
+ 	for (i = 0; i < count; i++) {
+-		mmc_test_prepare_mrq(test, cur_areq->mrq, sg, sg_len, dev_addr,
+-				     blocks, blksz, write);
++		mmc_prepare_mrq(test->test, cur_areq->mrq, sg, sg_len,
++				    dev_addr, blocks, blksz, write);
+ 		done_areq = mmc_start_req(test->card->host, cur_areq, &ret);
+ 
+ 		if (ret || (!done_areq && i > 0))
+@@ -726,12 +642,12 @@ static int mmc_test_simple_transfer(struct mmc_test_card *test,
+ 	mrq.data = &data;
+ 	mrq.stop = &stop;
+ 
+-	mmc_test_prepare_mrq(test, &mrq, sg, sg_len, dev_addr,
++	mmc_prepare_mrq(test->card, &mrq, sg, sg_len, dev_addr,
+ 		blocks, blksz, write);
+ 
+ 	mmc_wait_for_req(test->card->host, &mrq);
+ 
+-	mmc_test_wait_busy(test);
++	mmc_test_wait_busy(test->card);
+ 
+ 	return mmc_test_check_result(test, &mrq);
+ }
+@@ -752,12 +668,12 @@ static int mmc_test_broken_transfer(struct mmc_test_card *test,
+ 
+ 	sg_init_one(&sg, test->buffer, blocks * blksz);
+ 
+-	mmc_test_prepare_mrq(test, &mrq, &sg, 1, 0, blocks, blksz, write);
++	mmc_prepare_mrq(test->card, &mrq, &sg, 1, 0, blocks, blksz, write);
+ 	mmc_test_prepare_broken_mrq(test, &mrq, write);
+ 
+ 	mmc_wait_for_req(test->card->host, &mrq);
+ 
+-	mmc_test_wait_busy(test);
++	mmc_test_wait_busy(test->card);
+ 
+ 	return mmc_test_check_broken_result(test, &mrq);
+ }
+diff --git a/drivers/mmc/core/core.c b/drivers/mmc/core/core.c
+index 918354c..6b4e2da 100644
+--- a/drivers/mmc/core/core.c
++++ b/drivers/mmc/core/core.c
+@@ -3632,6 +3632,135 @@ int mmc_pm_notify(struct notifier_block *notify_block,
+ }
+ #endif
+ 
++/*
++ * Fill in the mmc_request structure given a set of transfer parameters.
++ */
++void mmc_prepare_mrq(struct mmc_card *card,
++	struct mmc_request *mrq, struct scatterlist *sg, unsigned sg_len,
++	unsigned dev_addr, unsigned blocks, unsigned blksz, int write)
++{
++	BUG_ON(!mrq || !mrq->cmd || !mrq->data || !mrq->stop);
++
++	if (blocks > 1) {
++		mrq->cmd->opcode = write ?
++			MMC_WRITE_MULTIPLE_BLOCK : MMC_READ_MULTIPLE_BLOCK;
++	} else {
++		mrq->cmd->opcode = write ?
++			MMC_WRITE_BLOCK : MMC_READ_SINGLE_BLOCK;
++	}
++
++	mrq->cmd->arg = dev_addr;
++	if (!mmc_card_blockaddr(card))
++		mrq->cmd->arg <<= 9;
++
++	mrq->cmd->flags = MMC_RSP_R1 | MMC_CMD_ADTC;
++
++	if (blocks == 1) {
++		mrq->stop = NULL;
++	} else {
++		mrq->stop->opcode = MMC_STOP_TRANSMISSION;
++		mrq->stop->arg = 0;
++		mrq->stop->flags = MMC_RSP_R1B | MMC_CMD_AC;
++	}
++
++	mrq->data->blksz = blksz;
++	mrq->data->blocks = blocks;
++	mrq->data->flags = write ? MMC_DATA_WRITE : MMC_DATA_READ;
++	mrq->data->sg = sg;
++	mrq->data->sg_len = sg_len;
++
++	mmc_set_data_timeout(mrq->data, card);
++}
++EXPORT_SYMBOL(mmc_prepare_mrq);
++
++static int mmc_busy(struct mmc_command *cmd)
++{
++	return !(cmd->resp[0] & R1_READY_FOR_DATA) ||
++		(R1_CURRENT_STATE(cmd->resp[0]) == R1_STATE_PRG);
++}
++
++/*
++ * Wait for the card to finish the busy state
++ */
++int mmc_wait_busy(struct mmc_card *card)
++{
++	int ret, busy = 0;
++	struct mmc_command cmd = {0};
++
++	memset(&cmd, 0, sizeof(struct mmc_command));
++	cmd.opcode = MMC_SEND_STATUS;
++	cmd.arg = card->rca << 16;
++	cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_AC;
++
++	do {
++		ret = mmc_wait_for_cmd(card->host, &cmd, 0);
++		if (ret)
++			break;
++
++		if (!busy && mmc_busy(&cmd)) {
++			busy = 1;
++			if (card->host->caps & MMC_CAP_WAIT_WHILE_BUSY) {
++				pr_warn("%s: Warning: Host did not "
++					"wait for busy state to end.\n",
++					mmc_hostname(card->host));
++			}
++		}
++
++	} while (mmc_busy(&cmd));
++
++	return ret;
++}
++EXPORT_SYMBOL(mmc_wait_busy);
++
++int mmc_check_result(struct mmc_request *mrq)
++{
++	int ret;
++
++	BUG_ON(!mrq || !mrq->cmd || !mrq->data);
++
++	ret = 0;
++
++	if (!ret && mrq->cmd->error)
++		ret = mrq->cmd->error;
++	if (!ret && mrq->data->error)
++		ret = mrq->data->error;
++	if (!ret && mrq->stop && mrq->stop->error)
++		ret = mrq->stop->error;
++	if (!ret && mrq->data->bytes_xfered !=
++		mrq->data->blocks * mrq->data->blksz)
++		ret = -EPERM;
++
++	return ret;
++}
++EXPORT_SYMBOL(mmc_check_result);
++
++/*
++ * transfer with certain parameters
++ */
++int mmc_simple_transfer(struct mmc_card *card,
++	struct scatterlist *sg, unsigned sg_len, unsigned dev_addr,
++	unsigned blocks, unsigned blksz, int write)
++{
++	struct mmc_request mrq = {0};
++	struct mmc_command cmd = {0};
++	struct mmc_command stop = {0};
++	struct mmc_data data = {0};
++
++	mrq.cmd = &cmd;
++	mrq.data = &data;
++	mrq.stop = &stop;
++
++	mmc_prepare_mrq(card, &mrq, sg, sg_len, dev_addr,
++		blocks, blksz, write);
++
++	mmc_wait_for_req(card->host, &mrq);
++
++	mmc_wait_busy(card);
++
++	return mmc_check_result(&mrq);
++}
++EXPORT_SYMBOL(mmc_simple_transfer);
++
+ #ifdef CONFIG_PM_RUNTIME
+ void mmc_dump_dev_pm_state(struct mmc_host *host, struct device *dev)
+ {
+diff --git a/include/linux/mmc/core.h b/include/linux/mmc/core.h
+index f6f4ccf..2ebe589 100644
+--- a/include/linux/mmc/core.h
++++ b/include/linux/mmc/core.h
+@@ -156,6 +156,15 @@ extern int mmc_flush_cache(struct mmc_card *);
+ extern int mmc_detect_card_removed(struct mmc_host *host);
+ extern int mmc_remove_sd_card(struct mmc_host *host);
+ 
++extern void mmc_prepare_mrq(struct mmc_card *card,
++	struct mmc_request *mrq, struct scatterlist *sg, unsigned sg_len,
++	unsigned dev_addr, unsigned blocks, unsigned blksz, int write);
++extern int mmc_wait_busy(struct mmc_card *card);
++extern int mmc_check_result(struct mmc_request *mrq);
++extern int mmc_simple_transfer(struct mmc_card *card, struct scatterlist *sg,
++	unsigned sg_len, unsigned dev_addr, unsigned blocks, unsigned blksz,
++	int write);
++
+ extern void mmc_blk_init_bkops_statistics(struct mmc_card *card);
+ extern void mmc_rpm_hold(struct mmc_host *host, struct device *dev);
+ extern void mmc_rpm_release(struct mmc_host *host, struct device *dev);
+-- 
+1.9.1
+

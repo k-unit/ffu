@@ -1,0 +1,195 @@
+From b5ae4907692af13797e54a03d2651e146fc58e28 Mon Sep 17 00:00:00 2001
+From: Ilan Smith <ilan.smith@sandisk.com>
+Date: Fri, 4 Sep 2015 04:44:03 +0800
+Subject: [PATCH 2/2] mmc: FFU Support.
+
+Change-Id: I8f2e404e71fe7df81c70ea24ed2142bf88326b1b
+---
+ arch/arm64/configs/msm8994_defconfig |  1 +
+ drivers/Makefile                     |  2 ++
+ drivers/mmc/card/block.c             |  6 ++++++
+ drivers/mmc/core/Kconfig             |  8 ++++++++
+ drivers/mmc/core/mmc.c               | 11 +++++++++++
+ include/linux/mmc/card.h             |  2 ++
+ include/linux/mmc/mmc.h              |  9 +++++++++
+ include/linux/mmc/mmc_ffu.h          | 30 ++++++++++++++++++++++++++++++
+ 8 files changed, 69 insertions(+)
+ create mode 100644 include/linux/mmc/mmc_ffu.h
+
+diff --git a/arch/arm64/configs/msm8994_defconfig b/arch/arm64/configs/msm8994_defconfig
+index e9f676a..63a568c 100644
+--- a/arch/arm64/configs/msm8994_defconfig
++++ b/arch/arm64/configs/msm8994_defconfig
+@@ -521,6 +521,7 @@ CONFIG_MMC_BLOCK_MINORS=16
+ CONFIG_MMC_SDHCI=y
+ CONFIG_MMC_SDHCI_PLTFM=y
+ CONFIG_MMC_SDHCI_MSM=y
++CONFIG_MMC_FFU=y
+ CONFIG_MMC_BLOCK_DEFERRED_RESUME=y
+ CONFIG_LEDS_QPNP=y
+ CONFIG_LEDS_QPNP_RGB=y
+diff --git a/drivers/Makefile b/drivers/Makefile
+index bec1848..0de9ef0 100755
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -177,3 +177,5 @@ obj-$(CONFIG_HTC_DEBUG)		+= htc_debug/
+ obj-$(CONFIG_HTC_DEBUG_FOOTPRINT)	+= htc_mnemosyne/
+ obj-$(CONFIG_HTC_POWER_DEBUG)		+= htc_power_debug/
+ obj-y += htc_ril/
++
++obj-$(CONFIG_MMC_FFU)		+= $(MMC_MH_FFU_PATH)/
+diff --git a/drivers/mmc/card/block.c b/drivers/mmc/card/block.c
+index 46ac400..e471544 100644
+--- a/drivers/mmc/card/block.c
++++ b/drivers/mmc/card/block.c
+@@ -45,6 +45,7 @@
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/mmc.h>
+ #include <linux/mmc/sd.h>
++#include <linux/mmc/mmc_ffu.h>
+ 
+ #include <asm/uaccess.h>
+ 
+@@ -675,6 +676,11 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
+ 		   goto cmd_done;
+ 	}
+ 
++	if (idata->ic.opcode == MMC_FFU_INVOKE_OP) {
++		err = mmc_ffu_invoke(card, idata->buf);
++		goto cmd_done;
++	}
++
+ 	cmd.opcode = idata->ic.opcode;
+ 	cmd.arg = idata->ic.arg;
+ 	cmd.flags = idata->ic.flags;
+diff --git a/drivers/mmc/core/Kconfig b/drivers/mmc/core/Kconfig
+index ae10a37..018028d 100644
+--- a/drivers/mmc/core/Kconfig
++++ b/drivers/mmc/core/Kconfig
+@@ -41,3 +41,11 @@ config MMC_PARANOID_SD_INIT
+ 	  about re-trying SD init requests. This can be a useful
+ 	  work-around for buggy controllers and hardware. Enable
+ 	  if you are experiencing issues with SD detection.
++
++config MMC_FFU
++	bool "FFU SUPPORT"
++	depends on MMC != n
++	help
++	  This is an option to run firmware update on eMMC 5.0.
++	  Field firmware updates (FFU) enables features enhancment
++	  in the field.
+diff --git a/drivers/mmc/core/mmc.c b/drivers/mmc/core/mmc.c
+index 0bc7f14..687f116 100644
+--- a/drivers/mmc/core/mmc.c
++++ b/drivers/mmc/core/mmc.c
+@@ -17,6 +17,7 @@
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/mmc.h>
++#include <linux/mmc/mmc_ffu.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/reboot.h>
+ 
+@@ -553,6 +554,16 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
+ 		card->ext_csd.data_sector_size = 512;
+ 	}
+ 
++	/* eMMC v5 or later */
++	if (card->ext_csd.rev >= 7) {
++		card->ext_csd.ffu_capable =
++			((ext_csd[EXT_CSD_SUPPORTED_MODE] & 0x1) == 0x1) &&
++			((ext_csd[EXT_CSD_FW_CONFIG] & 0x1) == 0x0);
++		card->ext_csd.ffu_mode_op = ext_csd[EXT_CSD_FFU_FEATURES];
++	} else {
++		    card->ext_csd.ffu_capable = false;
++	}
++
+ 	if (mmc_card_mmc(card)) {
+ 		char *buf;
+ 		int i, j;
+diff --git a/include/linux/mmc/card.h b/include/linux/mmc/card.h
+index a66a341..d32758a 100644
+--- a/include/linux/mmc/card.h
++++ b/include/linux/mmc/card.h
+@@ -83,6 +83,8 @@ struct mmc_ext_csd {
+ 	bool			hpi_en;			
+ 	bool			hpi;			
+ 	unsigned int		hpi_cmd;		
++	bool			ffu_capable;
++	bool 			ffu_mode_op;
+ 	bool			bkops;		
+ 	bool			bkops_en;	
+ 	unsigned int            data_sector_size;       
+diff --git a/include/linux/mmc/mmc.h b/include/linux/mmc/mmc.h
+index 18413e4..3db5e9d 100644
+--- a/include/linux/mmc/mmc.h
++++ b/include/linux/mmc/mmc.h
+@@ -173,6 +173,9 @@ struct _mmc_csd {
+ #define CSD_SPEC_VER_4      4           
+ 
+ 
++#define EXT_CSD_FFU_STATUS		26
++#define EXT_CSD_MODE_OPERATION_CODES	29
++#define EXT_CSD_MODE_CONFIG		30
+ #define EXT_CSD_FLUSH_CACHE		32      
+ #define EXT_CSD_CACHE_CTRL		33      
+ #define EXT_CSD_POWER_OFF_NOTIFICATION	34	
+@@ -192,6 +195,7 @@ struct _mmc_csd {
+ #define EXT_CSD_SANITIZE_START		165     
+ #define EXT_CSD_WR_REL_PARAM		166	
+ #define EXT_CSD_RPMB_MULT		168	
++#define EXT_CSD_FW_CONFIG		169
+ #define EXT_CSD_BOOT_WP			173	
+ #define EXT_CSD_ERASE_GROUP_DEF		175	
+ #define EXT_CSD_PART_CONFIG		179	
+@@ -231,6 +235,11 @@ struct _mmc_csd {
+ #define EXT_CSD_CACHE_SIZE		249	
+ #define EXT_CSD_PWR_CL_DDR_200_360	253	
+ #define EXT_CSD_VENDOR_SPECIFIC_FIELDS_258 258 
++#define EXT_CSD_NUM_OF_FW_SEC_PROG	302
++#define EXT_CSD_FFU_ARG			487
++#define EXT_CSD_OPERATION_CODE_TIMEOUT	491
++#define EXT_CSD_FFU_FEATURES		492
++#define EXT_CSD_SUPPORTED_MODE		493
+ #define EXT_CSD_TAG_UNIT_SIZE		498	
+ #define EXT_CSD_DATA_TAG_SUPPORT	499	
+ #define EXT_CSD_MAX_PACKED_WRITES	500	
+diff --git a/include/linux/mmc/mmc_ffu.h b/include/linux/mmc/mmc_ffu.h
+new file mode 100644
+index 0000000..ae2427a
+--- /dev/null
++++ b/include/linux/mmc/mmc_ffu.h
+@@ -0,0 +1,30 @@
++#ifndef _MMC_FFU_H_
++#define _MMC_FFU_H_
++
++#include <linux/mmc/card.h>
++
++/* embed in include/linux/mmc/core.h */
++
++/*
++ * eMMC5.0 Field Firmware Update (FFU) opcodes
++ */
++#define MMC_FFU_INVOKE_OP 302
++
++#define MMC_FFU_MODE_SET 0x1
++#define MMC_FFU_MODE_NORMAL 0x0
++#define MMC_FFU_INSTALL_SET 0x2
++
++#ifdef CONFIG_MMC_FFU
++#define MMC_FFU_FEATURES 0x1
++#define FFU_FEATURES(ffu_features) (ffu_features & MMC_FFU_FEATURES)
++
++int mmc_ffu_invoke(struct mmc_card *card, const char *name);
++#else
++static inline int mmc_ffu_invoke(struct mmc_card *card, const char *name)
++{
++	return -ENOSYS;
++}
++#endif
++
++#endif
++
+-- 
+1.9.1
+

@@ -179,12 +179,13 @@ int mmc_ffu_write(struct mmc_card *card, const u8 *src, u32 arg,
 	int rc;
 	struct mmc_ffu_area area = {0};
 	int block_size = card->ext_csd.data_sector_size;
+	int remaining = size;
 
 	area.max_segs = card->host->max_segs;
 	area.max_seg_sz = card->host->max_seg_size & ~(block_size - 1);
 
 	do {
-		area.max_tfr = size;
+		area.max_tfr = remaining;
 		if (area.max_tfr >> 9 > card->host->max_blk_count)
 			area.max_tfr = card->host->max_blk_count << 9;
 		if (area.max_tfr > card->host->max_req_size)
@@ -197,16 +198,17 @@ int mmc_ffu_write(struct mmc_card *card, const u8 *src, u32 arg,
 			goto exit;
 
 		rc = mmc_simple_transfer(card, area.sgtable.sgl, area.sg_len,
-			arg, area.max_tfr / block_size, block_size, 1);
+			arg + size - remaining, area.max_tfr / block_size,
+			block_size, 1);
 		mmc_ffu_area_cleanup(&area);
 		if (rc != 0) {
 			pr_err("%s mmc_ffu_simple_transfer %d\n", __func__, rc);
 			goto exit;
 		}
 		src += area.max_tfr;
-		size -= area.max_tfr;
+		remaining -= area.max_tfr;
 
-	} while (size > 0);
+	} while (remaining > 0);
 
 exit:
 	return rc;

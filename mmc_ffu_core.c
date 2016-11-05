@@ -65,6 +65,7 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 	unsigned long max_seg_page_cnt = DIV_ROUND_UP(area->max_seg_sz,
 		PAGE_SIZE);
 	unsigned long page_cnt = 0;
+	unsigned long host_max_segs = area->max_segs;
 
 	/* we divide by 16 to ensure we will not allocate a big amount
 	 * of unnecessary pages */
@@ -92,6 +93,22 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 	while (max_page_cnt) {
 		struct page *page;
 		unsigned int order;
+
+		if (area->mem.cnt >= area->max_segs) {
+			struct mmc_ffu_pages *arr;
+
+			area->max_segs += DIV_ROUND_UP(max_page_cnt,
+				max_seg_page_cnt);
+			if (area->max_segs > host_max_segs)
+				goto out_free;
+			arr = krealloc(area->mem.arr,
+				sizeof(struct mmc_ffu_pages) * area->max_segs,
+				GFP_KERNEL);
+			if (!arr)
+				goto out_free;
+
+			area->mem.arr = arr;
+		}
 
 		order = get_order(max_seg_page_cnt << PAGE_SHIFT);
 

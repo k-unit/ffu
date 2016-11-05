@@ -27,11 +27,9 @@ struct mmc_ffu_mem {
 };
 
 struct mmc_ffu_area {
-	unsigned long max_sz;
 	unsigned int max_tfr;
 	unsigned int max_segs;
 	unsigned int max_seg_sz;
-	unsigned int blocks;
 	unsigned int sg_len;
 	struct mmc_ffu_mem mem;
 	struct sg_table sgtable;

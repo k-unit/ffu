@@ -88,7 +88,7 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 		GFP_KERNEL);
 	area->mem.cnt = 0;
 	if (!area->mem.arr)
-		goto out_free;
+		return -ENOMEM;
 
 	while (max_page_cnt) {
 		struct page *page;
@@ -100,12 +100,12 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 			area->max_segs += DIV_ROUND_UP(max_page_cnt,
 				max_seg_page_cnt);
 			if (area->max_segs > host_max_segs)
-				goto out_free;
+				return -ENOMEM;
 			arr = krealloc(area->mem.arr,
 				sizeof(struct mmc_ffu_pages) * area->max_segs,
 				GFP_KERNEL);
 			if (!arr)
-				goto out_free;
+				return -ENOMEM;
 
 			area->mem.arr = arr;
 		}
@@ -117,7 +117,7 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 		} while (!page && order--);
 
 		if (!page)
-			goto out_free;
+			return -ENOMEM;
 
 		area->mem.arr[area->mem.cnt].page = page;
 		area->mem.arr[area->mem.cnt].order = order;
@@ -129,13 +129,9 @@ int mmc_ffu_alloc_mem(struct mmc_ffu_area *area, unsigned long min_sz)
 	}
 
 	if (page_cnt < min_page_cnt)
-		goto out_free;
+		return -ENOMEM;
 
 	return 0;
-
-out_free:
-	mmc_ffu_free_mem(&area->mem);
-	return -ENOMEM;
 }
 
 /*
@@ -150,6 +146,8 @@ int mmc_ffu_area_init(struct mmc_ffu_area *area, struct mmc_card *card,
 	unsigned int length = 0, page_length;
 
 	ret = mmc_ffu_alloc_mem(area, 1);
+	if (ret)
+		goto out_free;
 	for (i = 0; i < area->mem.cnt; i++) {
 		if (length > area->max_tfr) {
 			ret = -EINVAL;

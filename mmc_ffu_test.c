@@ -45,9 +45,12 @@
 #define FFU_STATUS_ERROR_DOWNLOAD_FIRMWARE 0x12
 #define FFU_STATUS_NONE -1
 
-#define FFU_FEATURES_SUPPORT_MOC 0x00
-#define FFU_FEATURES_NO_SUPPORT_MOC 0x01
+#define FFU_FEATURES_NO_SUPPORT_MOC 0x00
+#define FFU_FEATURES_SUPPORT_MOC 0x01
 #define FFU_FEATURES_NONE -1
+
+#define FFU_MODE_OPERATION_CODES_DEFAULT 0x00
+#define FFU_MODE_OPERATION_CODES_MAX 0x17
 
 #define SUPPORTED_MODES_NO_VSM_NO_FFU 0x00
 #define SUPPORTED_MODES_NO_VSM_FFU 0x01
@@ -186,9 +189,10 @@ static int __ffu_area_init_test(int blks, s8 data_sector_size)
 	unsigned long limit;
 	u8 *src = NULL, *src_verify = NULL;
 
-	kut_mmc_ext_csd_set_ffu(VER_DEFAULT, MODE_OPERATION_CODE_FFU_INSTALL,
-		MODE_CONFIG_FFU, data_sector_size, FW_CONFIG_UPDATE_DISABLE_OFF,
-		FFU_ARG_NEW, FFU_FEATURES_SUPPORT_MOC,
+	kut_mmc_ext_csd_set_ffu(VER_DEFAULT, FFU_STATUS_SUCCESS,
+		MODE_OPERATION_CODE_FFU_INSTALL, MODE_CONFIG_FFU,
+		data_sector_size, FW_CONFIG_UPDATE_DISABLE_OFF, FFU_ARG_NEW,
+		FFU_FEATURES_NO_SUPPORT_MOC, FFU_MODE_OPERATION_CODES_DEFAULT,
 		SUPPORTED_MODES_NO_VSM_FFU);
 	kut_mmc_init(NULL, NULL, &host, &card, 0);
 
@@ -290,9 +294,10 @@ static int __mmc_ffu_write_test(s8 data_sector_size, int size)
 	int remaining, max_xfer_length;
 
 	/* setup extended csd */
-	kut_mmc_ext_csd_set_ffu(VER_DEFAULT, MODE_OPERATION_CODE_FFU_INSTALL,
-		MODE_CONFIG_FFU, data_sector_size, FW_CONFIG_UPDATE_DISABLE_OFF,
-		FFU_ARG_NEW, FFU_FEATURES_SUPPORT_MOC,
+	kut_mmc_ext_csd_set_ffu(VER_DEFAULT, FFU_STATUS_SUCCESS,
+		MODE_OPERATION_CODE_FFU_INSTALL, MODE_CONFIG_FFU,
+		data_sector_size, FW_CONFIG_UPDATE_DISABLE_OFF, FFU_ARG_NEW,
+		FFU_FEATURES_NO_SUPPORT_MOC, FFU_MODE_OPERATION_CODES_DEFAULT,
 		SUPPORTED_MODES_NO_VSM_FFU);
 	kut_mmc_init(NULL, NULL, &host, &card, 0);
 

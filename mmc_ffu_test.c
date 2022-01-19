@@ -58,6 +58,12 @@
 #define SUPPORTED_MODES_VSM_FFU 0x11
 #define SUPPORTED_MODES_NONE -1
 
+struct s8_with_name {
+	s8 opt;
+	char *name;
+};
+#define MAKE_S8_WITH_NAME(_s8_opt_) { _s8_opt_, #_s8_opt_ }
+
 static int verify_mmc_ffu_mem(struct sg_table *table, struct mmc_ffu_mem *mem,
 	unsigned long length)
 {

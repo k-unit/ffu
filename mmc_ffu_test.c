@@ -11,6 +11,18 @@
 #include <unit_test.h>
 
 #include <string.h>
+ 
+#ifdef CONFIG_KUT_COLOURS
+#undef C_ITALIC
+#define C_ITALIC "\033[03m"
+#undef C_NORMAL
+#define C_NORMAL "\033[00;00;00m"
+#else
+#undef C_ITALIC
+#define C_ITALIC ""
+#undef C_NORMAL
+#define C_NORMAL ""
+#endif
 
 #define VER_DEFAULT 7
 #define VER_NONE -1
@@ -413,6 +425,145 @@ exit:
 	return ret;
 }
 
+static int mmc_ffu_install_test_one(struct s8_with_name *block_size,
+		struct s8_with_name *ffu_feature, u8 timeout,
+		struct s8_with_name *ffu_status)
+{
+	struct mmc_host *host = NULL;
+	struct mmc_card *card = NULL;
+	u8 ext_csd[512];
+	int st;
+	int ret = 0;
+
+	printf("%sTesting:%s %s, %s, timeout: 0x%x, %s (%d)\n", C_ITALIC,
+		C_NORMAL, block_size->name, ffu_feature->name, timeout,
+		ffu_status->name, ffu_status->opt);
+
+	kut_mmc_ext_csd_set_ffu(VER_DEFAULT, ffu_status->opt,
+		MODE_OPERATION_CODE_FFU_INSTALL, MODE_CONFIG_FFU,
+		block_size->opt, FW_CONFIG_UPDATE_DISABLE_OFF, FFU_ARG_NEW,
+		ffu_feature->opt, timeout, SUPPORTED_MODES_NO_VSM_FFU);
+
+	kut_mmc_init(NULL, NULL, &host, &card, 0);
+	ret = mmc_send_ext_csd(card, ext_csd);
+	if (ret)
+		goto exit;
+
+	st = mmc_ffu_install(card, ext_csd);
+	if (!!st != !!ffu_status->opt)
+		ret = -1;
+
+	/* JEDEC Standard No. 84-XXX, Annex A Application Notes
+	 *
+	 * A.12 Field Firmware Update
+	 * The following flow describes the positive oriented FFU flow.
+	 *
+	 *                +-------------------------------------+
+	 *                | Using CMD8 host checks if FFU is    |
+	 *                | supported by the device by reading  |
+	 *                | SUPPORTED_MODES field               |
+	 *                +-------------------------------------+
+	 *                                   |
+	 *                                   V
+	 *                +-------------------------------------+
+	 *                | Host checks that Update_Disable     |
+	 *                | bit in FW_CONFIG [169] is '0'       |
+	 *                +-------------------------------------+
+	 *                                   |
+	 *                                   V
+	 *                +-------------------------------------+
+	 *                | Host sets MODE_CONFIG to FFU Mode   |
+	 *                +-------------------------------------+
+	 *                                   |
+	 *                                   V
+	 *                +-------------------------------------+
+	 *                | Host sets MODE_CONFIG to FFU Mode   |
+	 *                +-------------------------------------+
+	 *                             |           |
+	 *      MODE_OPERATION_CODES   |           |   MODE_OPERATION_CODES
+	 *           supported         |           |      not supported
+	 *                             V           V
+	 * +-------------------------------+   +-------------------------------*
+	 * | Host sets                     |   |                               |
+	 * | MODE_OPERATION_CODES to       |   | Host sets MODE_CONFIG to      |
+	 * | FFU_INSTALL which             |   | NORMAL and performs           |
+	 * | automatically sets            |   | CMD0/HW Reset/Power cycle     |
+	 * | MODE_CONFIG to NORMAL         |   |                               |
+	 * +-------------------------------+   +-------------------------------*
+	 *
+	 * */
+	if (((ext_csd[EXT_CSD_FFU_FEATURES] != FFU_FEATURES_NO_SUPPORT_MOC) ||
+			(ext_csd[EXT_CSD_MODE_CONFIG] != MMC_FFU_MODE_NORMAL))
+			&&
+		((ext_csd[EXT_CSD_FFU_FEATURES] != FFU_FEATURES_SUPPORT_MOC) ||
+			(ext_csd[EXT_CSD_MODE_OPERATION_CODES] !=
+			 MODE_OPERATION_CODE_FFU_INSTALL))) {
+		ret = -1;
+	}
+
+exit:
+	kut_mmc_uninit(NULL, host, card);
+	return ret;
+}
+
+static int mmc_ffu_install_test(void)
+{
+	int ret = 0;
+	struct s8_with_name block_sizes[2] = {
+		MAKE_S8_WITH_NAME(DATA_SECTOR_SIZE_512B),
+		MAKE_S8_WITH_NAME(DATA_SECTOR_SIZE_4KB),
+	};
+	int size;
+
+	for (size = 0; size < ARRAY_SZ(block_sizes); size++) {
+		struct s8_with_name ffu_features[2] = {
+			MAKE_S8_WITH_NAME(FFU_FEATURES_NO_SUPPORT_MOC),
+			MAKE_S8_WITH_NAME(FFU_FEATURES_SUPPORT_MOC),
+		};
+		int mode;
+
+		for (mode = 0; mode < ARRAY_SZ(ffu_features); mode++) {
+			u8 timeout;
+
+			for (timeout = FFU_MODE_OPERATION_CODES_DEFAULT;
+					timeout <= FFU_MODE_OPERATION_CODES_MAX;
+					timeout++) {
+				struct s8_with_name ffu_status[4] = {
+					MAKE_S8_WITH_NAME(FFU_STATUS_SUCCESS),
+					MAKE_S8_WITH_NAME(FFU_STATUS_GENERAL_ERROR),
+					MAKE_S8_WITH_NAME(
+						FFU_STATUS_FIRMWARE_INSTALL_ERROR),
+					MAKE_S8_WITH_NAME(
+						FFU_STATUS_ERROR_DOWNLOAD_FIRMWARE),
+				};
+				int status;
+
+				if ((ffu_features[mode].opt ==
+						FFU_FEATURES_SUPPORT_MOC) ^ !!timeout) {
+					/* FFU_FEATURES_SUPPORT_MOC requires
+					       0x1 <= timeout <= 0x17 requires
+					   FFU_FEATURES_NO_SUPPORT_MOC requires
+					       timeout == 0x00 */
+					continue;
+				}
+
+				for (status = 0; status < ARRAY_SZ(ffu_status);
+						status++) {
+					printf("\n");
+					if (mmc_ffu_install_test_one(&block_sizes[size],
+							&ffu_features[mode],
+							timeout,
+							&ffu_status[status])) {
+						ret = -1;
+					}
+				}
+			}
+		}
+	}
+
+	return ret;
+}
+
 static struct single_test ffu_tests[] = {
 	{
 		description: "ffu map sg - no chaining",
@@ -429,6 +580,10 @@ static struct single_test ffu_tests[] = {
 	{
 		description: "ffu write test",
 		func: mmc_ffu_write_test,
+	},
+	{
+		description: "ffu install test",
+		func: mmc_ffu_install_test,
 	},
 };
 
